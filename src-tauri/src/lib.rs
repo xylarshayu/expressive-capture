@@ -23,7 +23,6 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use uuid::Uuid;
 use zip::{write::FileOptions, ZipArchive, ZipWriter};
 
-#[cfg(feature = "desktop")]
 const STAGING_DIR: &str = ".expressive-capture-staging";
 #[cfg(feature = "desktop")]
 const PRIMARY_HOTKEY: &str = "Ctrl+Alt+X";
@@ -207,6 +206,46 @@ fn prepare_capture_root(path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+fn prepare_staging_root(root: &Path) -> Result<PathBuf, String> {
+    let staging = root.join(STAGING_DIR);
+    match fs::symlink_metadata(&staging) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(command_error(
+                "capture staging directory must not be a symbolic link",
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(command_error("capture staging path must be a directory"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&staging).map_err(|error| {
+                command_error(format!("cannot create capture staging directory: {error}"))
+            })?;
+        }
+        Err(error) => {
+            return Err(command_error(format!(
+                "cannot inspect capture staging directory: {error}"
+            )));
+        }
+    }
+    let canonical = staging.canonicalize().map_err(|error| {
+        command_error(format!("cannot resolve capture staging directory: {error}"))
+    })?;
+    if canonical != staging || canonical.parent() != Some(root) {
+        return Err(command_error(
+            "capture staging directory is redirected outside its reserved path",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn prepare_capture_storage(path: &str) -> Result<PathBuf, String> {
+    let root = prepare_capture_root(path)?;
+    prepare_staging_root(&root)?;
+    Ok(root)
+}
+
 #[cfg(feature = "desktop")]
 fn default_capture_root() -> Result<PathBuf, String> {
     let home = std::env::var_os(if cfg!(target_os = "windows") {
@@ -219,7 +258,7 @@ fn default_capture_root() -> Result<PathBuf, String> {
         command_error("cannot determine the user home directory for the default capture root")
     })?;
     let root = home.join("Documents").join("Expressive Captures");
-    prepare_capture_root(&root.to_string_lossy())
+    prepare_capture_storage(&root.to_string_lossy())
 }
 
 #[cfg(feature = "desktop")]
@@ -526,7 +565,7 @@ fn configure_capture_root(root: String, state: State<'_, CaptureState>) -> Resul
     let requested = if root.trim().is_empty() {
         default_capture_root()?
     } else {
-        prepare_capture_root(&root)?
+        prepare_capture_storage(&root)?
     };
     let has_active_session = !state
         .sessions
@@ -559,8 +598,7 @@ fn configure_capture_root(root: String, state: State<'_, CaptureState>) -> Resul
     if has_active_session {
         return Ok(native_path(&requested));
     }
-    fs::create_dir_all(requested.join(STAGING_DIR))
-        .map_err(|error| command_error(format!("cannot create staging directory: {error}")))?;
+    prepare_staging_root(&requested)?;
     *state
         .root
         .lock()
@@ -579,8 +617,11 @@ fn begin_capture(state: State<'_, CaptureState>) -> Result<BeginCaptureResult, S
         .clone()
         .ok_or_else(|| command_error("configure_capture_root must be called first"))?;
     let session_id = Uuid::new_v4().to_string();
-    let staging_dir = root.join(STAGING_DIR).join(&session_id);
-    ensure_direct_child(&root.join(STAGING_DIR), &staging_dir)?;
+    // Repair a staging directory removed between application startup and the
+    // first capture. First launch must not depend on opening Settings once.
+    let staging_root = prepare_staging_root(&root)?;
+    let staging_dir = staging_root.join(&session_id);
+    ensure_direct_child(&staging_root, &staging_dir)?;
     fs::create_dir_all(staging_dir.join("attachments"))
         .map_err(|error| command_error(format!("cannot create capture staging area: {error}")))?;
     state
@@ -1253,7 +1294,7 @@ pub fn run() {
     let persisted = read_persisted_config(&config_path);
     let root = persisted
         .as_ref()
-        .and_then(|config| prepare_capture_root(&config.output_root).ok())
+        .and_then(|config| prepare_capture_storage(&config.output_root).ok())
         .or_else(|| default_capture_root().ok());
     let hotkey = persisted
         .as_ref()
@@ -1324,6 +1365,51 @@ mod tests {
         assert!(prepare_capture_root("relative").is_err());
         let root = prepare_capture_root(&created.to_string_lossy()).unwrap();
         assert!(root.is_dir());
+    }
+
+    #[test]
+    fn capture_storage_prepares_and_repairs_first_launch_staging_directory() {
+        let temp = tempdir().unwrap();
+        let requested = temp.path().join("captures");
+        let root = prepare_capture_storage(&requested.to_string_lossy()).unwrap();
+        let staging = root.join(STAGING_DIR);
+        assert!(staging.is_dir());
+
+        fs::remove_dir(&staging).unwrap();
+        let repaired = prepare_staging_root(&root).unwrap();
+        assert_eq!(repaired, staging.canonicalize().unwrap());
+        assert!(repaired.is_dir());
+    }
+
+    #[test]
+    fn capture_storage_does_not_replace_a_reserved_staging_file() {
+        let temp = tempdir().unwrap();
+        let root = prepare_capture_root(&temp.path().join("captures").to_string_lossy()).unwrap();
+        let staging = root.join(STAGING_DIR);
+        fs::write(&staging, b"keep me").unwrap();
+
+        assert_eq!(
+            prepare_staging_root(&root).unwrap_err(),
+            "capture staging path must be a directory"
+        );
+        assert_eq!(fs::read(&staging).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_storage_rejects_redirected_staging_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let root = prepare_capture_root(&temp.path().join("captures").to_string_lossy()).unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, root.join(STAGING_DIR)).unwrap();
+
+        assert_eq!(
+            prepare_staging_root(&root).unwrap_err(),
+            "capture staging directory must not be a symbolic link"
+        );
     }
 
     #[test]
