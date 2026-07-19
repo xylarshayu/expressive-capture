@@ -1,0 +1,46 @@
+[package]
+name = "expressive-capture"
+version = "0.1.0"
+description = "Keyboard-first Markdown, image, and Excalidraw capture utility"
+authors = ["xylar"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "expressive_capture_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["desktop"]
+desktop = [
+  "dep:tauri",
+  "dep:tauri-plugin-global-shortcut",
+  "dep:tauri-plugin-single-instance",
+  "dep:serde",
+  "dep:image",
+  "dep:uuid",
+  "dep:clipboard-win",
+]
+
+[dependencies]
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = "1"
+image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg", "webp", "bmp", "ico"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = { version = "5", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
