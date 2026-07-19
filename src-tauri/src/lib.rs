@@ -324,7 +324,12 @@ fn ensure_direct_child(parent: &Path, child: &Path) -> Result<(), String> {
     let canonical_parent = parent
         .canonicalize()
         .map_err(|error| command_error(format!("cannot resolve capture root: {error}")))?;
-    if child.parent() != Some(canonical_parent.as_path())
+    let canonical_child_parent = child
+        .parent()
+        .ok_or_else(|| command_error("capture path has no parent"))?
+        .canonicalize()
+        .map_err(|error| command_error(format!("cannot resolve capture path parent: {error}")))?;
+    if canonical_child_parent != canonical_parent
         || child
             .components()
             .any(|part| matches!(part, Component::ParentDir))
