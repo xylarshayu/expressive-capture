@@ -740,14 +740,12 @@ fn stage_diagram(
     }
     validate_excalidraw_scene(&scene_json)?;
     validate_svg_preview(&svg)?;
-    let session = checked_session(
-        &state
-            .sessions
-            .lock()
-            .map_err(|_| command_error("capture state lock poisoned"))?,
-        &session_id,
-    )?
-    .clone();
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| command_error("capture state lock poisoned"))?;
+    let session = checked_session(&sessions, &session_id)?.clone();
+    drop(sessions);
     let source_name = format!("{id}.excalidraw");
     let preview_name = format!("{id}.svg");
     let source = staged_attachment_path(&session, &source_name)?;
@@ -773,14 +771,12 @@ fn load_staged_diagram(
         .ok_or_else(|| {
             command_error("diagram path must name one staged attachments/*.excalidraw file")
         })?;
-    let session = checked_session(
-        &state
-            .sessions
-            .lock()
-            .map_err(|_| command_error("capture state lock poisoned"))?,
-        &session_id,
-    )?
-    .clone();
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| command_error("capture state lock poisoned"))?;
+    let session = checked_session(&sessions, &session_id)?.clone();
+    drop(sessions);
     let path = staged_attachment_path(&session, filename)?;
     let content = fs::read_to_string(path)
         .map_err(|error| command_error(format!("cannot load staged diagram: {error}")))?;
@@ -907,14 +903,12 @@ fn finalize_capture(
         .map_err(|_| command_error("capture state lock poisoned"))?
         .clone()
         .ok_or_else(|| command_error("configure_capture_root must be called first"))?;
-    let session = checked_session(
-        &state
-            .sessions
-            .lock()
-            .map_err(|_| command_error("capture state lock poisoned"))?,
-        &session_id,
-    )?
-    .clone();
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| command_error("capture state lock poisoned"))?;
+    let session = checked_session(&sessions, &session_id)?.clone();
+    drop(sessions);
     validate_markdown_attachment_references(&markdown, &session.staging_dir.join("attachments"))?;
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
