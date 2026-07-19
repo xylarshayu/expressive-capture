@@ -1512,15 +1512,32 @@ mod tests {
 
     #[test]
     fn svg_preview_rejects_active_or_external_content() {
-        assert!(validate_svg_preview(
-            r#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>"#
-        )
-        .is_ok());
-        assert!(validate_svg_preview("<svg><script>alert(1)</script></svg>").is_err());
-        assert!(
-            validate_svg_preview(r#"<svg><a href="https://example.test">x</a></svg>"#).is_err()
-        );
-        assert!(validate_svg_preview(r#"<svg onload="alert(1)"/>"#).is_err());
+        let safe_excalidraw_preview =
+            include_str!("../../tests/fixtures/diagram-v1/excalidraw-preview-safe.svg");
+        let external_excalidraw_fonts =
+            include_str!("../../tests/fixtures/diagram-v1/excalidraw-preview-external-font.svg");
+        assert!(validate_svg_preview(safe_excalidraw_preview).is_ok());
+
+        let forbidden = [
+            "<svg><script>alert(1)</script></svg>",
+            r#"<svg><foreignObject><p>HTML</p></foreignObject></svg>"#,
+            r#"<svg><iframe src="about:blank"/></svg>"#,
+            r#"<svg><object data="local"/></svg>"#,
+            r#"<svg><embed src="local"/></svg>"#,
+            r#"<svg><image href="data:image/png;base64,AA=="/></svg>"#,
+            r#"<svg><a href="https://example.test">x</a></svg>"#,
+            r#"<svg><a href="javascript:alert(1)">x</a></svg>"#,
+            r#"<svg onload="alert(1)"/>"#,
+            r#"<svg><text>&#106;avascript</text></svg>"#,
+            r#"<svg xmlns:xlink="http://www.w3.org/1999/xlink"></svg>"#,
+        ];
+        for svg in forbidden {
+            assert!(
+                validate_svg_preview(svg).is_err(),
+                "accepted unsafe SVG: {svg}"
+            );
+        }
+        assert!(validate_svg_preview(external_excalidraw_fonts).is_err());
     }
 
     #[test]

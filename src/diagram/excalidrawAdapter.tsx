@@ -6,6 +6,7 @@ import type {
   DiagramScene,
   DiagramStorage,
 } from "./types";
+import { stripExcalidrawFontStyles } from "./svgPreview";
 
 type ExcalidrawModule = {
   Excalidraw: ComponentType<Record<string, unknown>>;
@@ -115,7 +116,7 @@ export function DiagramCanvas({
             scene.files ?? {},
             "local",
           ),
-          svg: svg.outerHTML,
+          svg: stripExcalidrawFontStyles(svg.outerHTML),
         };
         await storage.saveDraft(artifact);
         return artifact;
