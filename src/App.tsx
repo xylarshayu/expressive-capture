@@ -8,6 +8,7 @@ import { pasteOutcomeMessage } from "./capture/paste";
 import type { CaptureStatus } from "./capture/types";
 import { createDiagramBlock, DiagramCanvas, parseDiagramBlock, type DiagramBlock, type DiagramFlushHandle, type DiagramStorage, renderDiagramMarkdown } from "./diagram";
 import { MarkdownEditor } from "./editor/MarkdownEditor";
+import { replaceDiagramTrigger, type DiagramTriggerRequest } from "./editor/diagramTrigger";
 import "./App.css";
 
 const WSL_NOTE = "> WSL: when a Windows path such as `C:\\…` is shown, access it from WSL as `/mnt/c/…`.";
@@ -266,12 +267,14 @@ function App() {
     }
   }
 
-  function activateDiagram(position: number) {
+  function activateDiagram(request: DiagramTriggerRequest) {
     const id = `dia_${crypto.randomUUID().replace(/-/g, "")}`;
     const block = createDiagramBlock(id);
-    const triggerStart = latestMarkdown.current.lastIndexOf("```diagram\n", position);
-    if (triggerStart < 0) return;
-    const next = `${latestMarkdown.current.slice(0, triggerStart)}${renderDiagramMarkdown(block)}\n${latestMarkdown.current.slice(triggerStart + "```diagram\n".length)}`;
+    const next = replaceDiagramTrigger(request, renderDiagramMarkdown(block));
+    if (next === null) {
+      setError("The diagram shortcut could not replace its Markdown fence. Your text was left unchanged.");
+      return;
+    }
     latestMarkdown.current = next;
     setMarkdown(next);
     setActiveDiagram(block);
@@ -477,6 +480,7 @@ function App() {
 
       <footer className="capture-footer">
         <span>Paste PNG, JPEG, or WebP directly. Type <code>```diagram</code>, then Enter, to draw.</span>
+        <span className="footer-dismiss-hint"><kbd>Esc</kbd> hides</span>
       </footer>
 
       {settingsOpen && <div className="modal-backdrop" role="presentation"><section className="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">

@@ -1,10 +1,10 @@
-import { history, historyKeymap, indentWithTab, defaultKeymap } from "@codemirror/commands";
+import { history, historyKeymap, indentWithTab, defaultKeymap, insertNewlineAndIndent } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorState, StateEffect, StateField, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 import { imageReferences, windowsPathToFileUrl } from "../capture/markdown";
-import { shouldOpenDiagram } from "./diagramTrigger";
+import { shouldOpenDiagram, type DiagramTriggerRequest } from "./diagramTrigger";
 import { isImageClipboardType, mapPasteRange, type TextRange } from "./imagePaste";
 
 type Props = {
@@ -12,7 +12,7 @@ type Props = {
   onChange: (markdown: string) => void;
   /** Return Markdown after native staging; it is inserted at the original caret/selection. */
   onPasteImages: (images: Blob[]) => Promise<string | void>;
-  onDiagramDirective: (position: number) => void;
+  onDiagramDirective: (request: DiagramTriggerRequest) => void;
   /** Optional host hook for already-rendered diagram SVG previews. */
   onEditDiagram?: (previewPath: string) => void;
   imagePreviewUrls: Record<string, string>;
@@ -85,7 +85,6 @@ export function MarkdownEditor({ value, onChange, onPasteImages, onDiagramDirect
 
   useEffect(() => {
     if (!host.current) return;
-    let typedEnterPending = false;
     const pasteAnchors = new Map<symbol, TextRange>();
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
@@ -99,19 +98,6 @@ export function MarkdownEditor({ value, onChange, onPasteImages, onDiagramDirect
       if (!update.docChanged) return;
       const next = update.state.doc.toString();
       callbacks.current.onChange(next);
-      for (const transaction of update.transactions) {
-        let entered = false;
-        transaction.changes.iterChanges((_fromA, _toA, _fromB, _toB, inserted) => {
-          if (inserted.toString().includes("\n")) entered = true;
-        });
-        if (!typedEnterPending || !entered) continue;
-        typedEnterPending = false;
-        const head = update.state.selection.main.head;
-        const openingLine = head > 0 ? update.state.doc.lineAt(head - 1) : null;
-        if (openingLine && shouldOpenDiagram(update.state.doc.toString(), openingLine.number, "typed", entered)) {
-          callbacks.current.onDiagramDirective(head);
-        }
-      }
     });
     view.current = new EditorView({
       parent: host.current,
@@ -122,16 +108,27 @@ export function MarkdownEditor({ value, onChange, onPasteImages, onDiagramDirect
           keymap.of([
             { key: "Mod-Enter", run: () => { callbacks.current.onSave(); return true; } },
             { key: "Escape", run: () => { callbacks.current.onEscape(); return true; } },
+            { key: "Enter", run: (editorView) => {
+              const selection = editorView.state.selection.main;
+              const head = selection.head;
+              const openingLine = editorView.state.doc.lineAt(head);
+              const markdown = editorView.state.doc.toString();
+              if (!selection.empty || head !== openingLine.to || !shouldOpenDiagram(markdown, openingLine.number, "typed", true)) return false;
+
+              const from = openingLine.from;
+              const to = openingLine.to;
+              if (!insertNewlineAndIndent(editorView)) return false;
+              callbacks.current.onDiagramDirective({
+                markdown: editorView.state.doc.toString(),
+                from,
+                to,
+              });
+              return true;
+            } },
             indentWithTab, ...defaultKeymap, ...historyKeymap,
           ]),
           EditorView.lineWrapping,
           EditorView.domEventHandlers({
-            keydown: (event) => {
-              // CodeMirror marks Enter as a generic `input` transaction, not
-              // `input.type`; capture the physical key before that transaction.
-              typedEnterPending = event.key === "Enter" && !event.isComposing;
-              return false;
-            },
             paste: (event, editorView) => {
               const images = [...event.clipboardData?.items ?? []]
                 .filter((item) => isImageClipboardType(item.type))
