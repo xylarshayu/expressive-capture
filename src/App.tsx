@@ -458,8 +458,8 @@ function App() {
         <div className="header-actions">
           <span className={`status-pill status-${status}`} aria-live="polite">{busy ? "Working…" : status}</span>
           <button className="quiet-button" onClick={() => setSettingsOpen(true)}>Settings</button>
-          <button className="primary-button" disabled={busy || (!!activeDiagram && !diagramReady)} onClick={() => void save(false)}>Save + copy <kbd>Ctrl+Enter</kbd></button>
-          <button className="archive-button" disabled={busy || (!!activeDiagram && !diagramReady)} onClick={() => void save(true)}>ZIP + copy</button>
+          <button className="primary-button" disabled={busy || (!!activeDiagram && !diagramReady)} onClick={() => void save(false)}>Save <kbd>Ctrl+Enter</kbd></button>
+          <button className="archive-button" disabled={busy || (!!activeDiagram && !diagramReady)} onClick={() => void save(true)}>ZIP</button>
         </div>
       </header>
 
