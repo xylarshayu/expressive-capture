@@ -165,6 +165,80 @@ fn slugify(title: &str) -> String {
     }
 }
 
+#[cfg(any(feature = "desktop", test))]
+fn is_generated_capture_document_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".md") else {
+        return false;
+    };
+    let Some((timestamp, remainder)) = stem.split_once('-') else {
+        return false;
+    };
+    let Some((slug, unique_suffix)) = remainder.rsplit_once('-') else {
+        return false;
+    };
+    !timestamp.is_empty()
+        && timestamp.len() <= 20
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        && timestamp.parse::<u64>().is_ok()
+        && !slug.is_empty()
+        && slug.len() <= 72
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && !slug.contains("--")
+        && slug
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && unique_suffix.len() == 8
+        && unique_suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn clean_staging_for_finalize(staging_dir: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(staging_dir)
+        .map_err(|error| command_error(format!("cannot inspect capture staging area: {error}")))?
+    {
+        let entry = entry.map_err(|error| {
+            command_error(format!("cannot inspect capture staging area: {error}"))
+        })?;
+        let name = entry.file_name();
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+            command_error(format!("cannot inspect capture staging entry: {error}"))
+        })?;
+        if name == "attachments" && metadata.is_dir() && !metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file()
+            && name
+                .to_str()
+                .is_some_and(is_generated_capture_document_name)
+        {
+            fs::remove_file(entry.path()).map_err(|error| {
+                command_error(format!("cannot remove stale staged Markdown: {error}"))
+            })?;
+            continue;
+        }
+        return Err(command_error(
+            "capture staging area contains an unexpected entry",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn rollback_capture_build(build_dir: &Path, staging_dir: &Path, document_name: &str) {
+    // Remove only the Markdown created by this finalization attempt. Attachments are
+    // the user's staged data and must survive a failed publish for the next retry.
+    let _ = fs::remove_file(build_dir.join(document_name));
+    if build_dir.exists() {
+        let _ = fs::rename(build_dir, staging_dir);
+    }
+    // If the directory rename succeeded before the first removal (or platform
+    // behavior changed underneath us), make the cleanup idempotent at its restored path.
+    let _ = fs::remove_file(staging_dir.join(document_name));
+}
+
 #[cfg(all(feature = "desktop", not(target_os = "windows")))]
 fn sync_directory(path: &Path) -> Result<(), String> {
     File::open(path)
@@ -956,6 +1030,10 @@ fn finalize_capture(
     let session = checked_session(&sessions, &session_id)?.clone();
     drop(sessions);
     validate_markdown_attachment_references(&markdown, &session.staging_dir.join("attachments"))?;
+    // A pre-fix Windows publish failure could restore its generated Markdown into
+    // the live session. Remove only files matching our exact generated-name shape;
+    // unexpected root entries fail closed instead of being deleted.
+    clean_staging_for_finalize(&session.staging_dir)?;
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| command_error("system clock is before epoch"))?
@@ -1017,6 +1095,9 @@ fn finalize_capture(
         document
             .sync_all()
             .map_err(|error| command_error(format!("cannot sync Markdown: {error}")))?;
+        // On Windows an open child file handle can prevent renaming its parent
+        // directory. The file is fully synced, so release it before publishing.
+        drop(document);
         sync_directory(&build_dir.join("attachments"))?;
         sync_directory(&build_dir)?;
         if archive {
@@ -1040,9 +1121,7 @@ fn finalize_capture(
         let _ = fs::remove_file(&build_zip);
         // Keep the session retryable: no partially published output, and restore the
         // opaque staging folder when a prepare/publish step fails.
-        if build_dir.exists() {
-            let _ = fs::rename(&build_dir, &session.staging_dir);
-        }
+        rollback_capture_build(&build_dir, &session.staging_dir, &document_name);
         *state
             .pending_copy_path
             .lock()
@@ -1498,6 +1577,78 @@ mod tests {
         assert!(!valid_attachment_id("diagram-abc"));
         assert!(!valid_attachment_id("dia_../../escape"));
         assert!(!valid_attachment_id("dia_"));
+    }
+
+    #[test]
+    fn generated_markdown_names_are_recognized_narrowly() {
+        assert!(is_generated_capture_document_name(
+            "1700000000-my-capture-deadbeef.md"
+        ));
+        assert!(is_generated_capture_document_name(
+            "1700000000-capture-01234567.md"
+        ));
+        assert!(!is_generated_capture_document_name("notes.md"));
+        assert!(!is_generated_capture_document_name(
+            "1700000000-my-capture-DEADBEEF.md"
+        ));
+        assert!(!is_generated_capture_document_name(
+            "1700000000-../escape-deadbeef.md"
+        ));
+        assert!(!is_generated_capture_document_name(
+            "not-a-time-my-capture-deadbeef.md"
+        ));
+    }
+
+    #[test]
+    fn finalize_cleanup_removes_only_stale_generated_markdown() {
+        let temp = tempdir().unwrap();
+        let staging = temp.path().join("session");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::write(
+            staging.join("1700000000-first-capture-deadbeef.md"),
+            "stale",
+        )
+        .unwrap();
+        fs::write(
+            staging.join("1700000001-second-capture-01234567.md"),
+            "stale",
+        )
+        .unwrap();
+
+        clean_staging_for_finalize(&staging).unwrap();
+
+        assert!(staging.join("attachments").is_dir());
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
+
+        fs::write(staging.join("notes.md"), "unknown").unwrap();
+        assert_eq!(
+            clean_staging_for_finalize(&staging).unwrap_err(),
+            "capture staging area contains an unexpected entry"
+        );
+        assert_eq!(
+            fs::read_to_string(staging.join("notes.md")).unwrap(),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn failed_publish_rollback_restores_attachments_without_generated_markdown() {
+        let temp = tempdir().unwrap();
+        let staging = temp.path().join("session");
+        let build = temp.path().join(".capture.tmp");
+        let document_name = "1700000000-capture-deadbeef.md";
+        fs::create_dir_all(build.join("attachments")).unwrap();
+        fs::write(build.join("attachments/image-001.png"), b"image").unwrap();
+        fs::write(build.join(document_name), "generated").unwrap();
+
+        rollback_capture_build(&build, &staging, document_name);
+
+        assert!(!build.exists());
+        assert_eq!(
+            fs::read(staging.join("attachments/image-001.png")).unwrap(),
+            b"image"
+        );
+        assert!(!staging.join(document_name).exists());
     }
 
     #[test]
