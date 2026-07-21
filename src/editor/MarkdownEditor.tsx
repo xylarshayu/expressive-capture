@@ -1,11 +1,11 @@
 import { history, historyKeymap, indentWithTab, defaultKeymap, insertNewlineAndIndent } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
 import { EditorState, StateEffect, StateField, type Range } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 import { imageReferences, windowsPathToFileUrl } from "../capture/markdown";
 import { shouldOpenDiagram, type DiagramTriggerRequest } from "./diagramTrigger";
 import { isImageClipboardType, mapPasteRange, type TextRange } from "./imagePaste";
+import { semanticMarkdownExtensions } from "./semanticMarkdown";
 
 type Props = {
   value: string;
@@ -104,7 +104,7 @@ export function MarkdownEditor({ value, onChange, onPasteImages, onDiagramDirect
       state: EditorState.create({
         doc: value,
         extensions: [
-          lineNumbers(), history(), markdown(), previewExtension(() => previews.current, () => callbacks.current.onEditDiagram), updateListener,
+          lineNumbers(), history(), semanticMarkdownExtensions(), previewExtension(() => previews.current, () => callbacks.current.onEditDiagram), updateListener,
           keymap.of([
             { key: "Mod-Enter", run: () => { callbacks.current.onSave(); return true; } },
             { key: "Escape", run: () => { callbacks.current.onEscape(); return true; } },
